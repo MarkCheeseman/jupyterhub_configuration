@@ -1,0 +1,115 @@
+Bootstrap: docker
+From: rockylinux:9.2
+
+%help
+
+A JupyterLab container with Rstudio and R support baked in.
+
+Bind-mount your virtual environment and notebook paths in and set PYTHON_VENV_PATH to the virtual
+environment path if you want to install any additional packages.
+
+Make sure that the Python interpreter in the virtual environment is also accessible / mapped into
+the container.
+
+%files
+    fonts.tar.gz /
+    ipykernel.json /
+    condarc /
+    
+%post
+
+##
+## Install R 
+##------------
+
+dnf update -y
+dnf install -y epel-release 
+dnf config-manager --set-enabled crb
+dnf update -y
+
+dnf install -y R wget gcc-c++ procps-ng libffi-devel libcurl-devel ImageMagick-c++ ImageMagick-c++-devel pandoc gmp-devel libxml2 glpk gdal-devel harfbuzz-devel fribidi-devel freetype-devel libpng-devel libtiff-devel libjpeg-turbo-devel gsl-devel make gcc perl-core pcre-devel zlib-devel
+
+cd /
+
+##
+## Install Miniconda
+##-------------------
+
+# run miniconda launcher
+wget https://repo.anaconda.com/miniconda/Miniconda3-py39_23.5.2-0-Linux-x86_64.sh
+bash Miniconda3-py39_23.5.2-0-Linux-x86_64.sh -b -u -p /opt/miniconda3
+export PATH=/opt/miniconda3/bin:$PATH
+eval "$(conda shell.bash hook)"
+rm Miniconda3-py39_23.5.2-0-Linux-x86_64.sh
+
+# add ipykernel and other necessary packages to base conda environment
+conda install -y -c conda-forge ipykernel jupyterhub==2.3.1 jupyterlab==3.2.9 batchspawner==1.1.0 jupyter-rsession-proxy==2.2.0 mamba 
+
+# add our condarc
+mkdir -p /etc/conda
+mv condarc /etc/conda/condarc
+chmod 644 /etc/conda/condarc
+
+# Copy the kernel...
+mv ipykernel.json /opt/miniconda3/share/jupyter/kernels/python3/kernel.json
+chmod 0644 /opt/miniconda3/share/jupyter/kernels/python3/kernel.json 
+
+# add some required font files
+tar xzf fonts.tar.gz
+mv fonts /usr/share/fonts/google-noto-emoji
+rm fonts.tar.gz
+
+
+##
+## Install RStudio 
+##-----------------
+
+# install compatible openssl library
+wget https://www.openssl.org/source/openssl-1.1.1v.tar.gz
+tar xzf openssl-1.1.1v.tar.gz
+cd openssl-1.1.1v
+./config
+make -j8 && make install
+export LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH
+cd .. && rm -rf openssl-1.1.1v*
+
+# download and install appropriate rpm file
+wget https://download2.rstudio.org/server/rhel9/x86_64/rstudio-server-rhel-2023.06.2-561-x86_64.rpm
+yum install -y rstudio-server-rhel-2023.06.2-561-x86_64.rpm
+rm rstudio-server-rhel-2023.06.2-561-x86_64.rpm 
+
+# install some convenient R packages
+export LC_ALL=C.UTF-8
+Rscript -e "install.packages(c('IRkernel','devtools','remotes'),repos = 'https://cran.curtin.edu.au',Ncpus=12)"
+
+
+%environment
+export CONDA_ENVIRONMENT_PATH=/jupyter/
+export JUPYTER_ENV_PYTHON_PATH=/opt/miniconda3
+export R_LIBS_USER=/rPackages
+export https_proxy=http://proxy.per.dug.com:3128
+export http_proxy=http://proxy.per.dug.com:3128
+export LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH
+export PATH=/opt/miniconda3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+
+
+%runscript
+set -x
+echo $PATH
+unset PYTHONPATH
+unset XDG_RUNTIME_DIR
+export PATH=/opt/miniconda3/bin:$PATH
+
+# if conda is in the path
+if command -v conda > /dev/null; then
+    eval "$(conda shell.bash hook)"
+    conda activate "${JUPYTER_ENV_PATH}"
+fi
+
+# if we are in a slurm job, run batchspawner otherwise jupyter
+if [ -z ${JUPYTERHUB_USER+x} ]; then
+    exec jupyter lab $*
+else
+    exec batchspawner-singleuser $*
+fi
